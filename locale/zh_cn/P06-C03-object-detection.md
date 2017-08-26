@@ -2,14 +2,17 @@
 # 卷积神经网络目标检测上手教程
 
 目标检测通俗的来说是为了找到图像或者视频里的所有目标物体。在下面这张图中，两狗一猫的位置，包括它们所属的类（狗／猫），需要被正确的检测到。
+
 Object detection aims to detect semantic objects in images or videos. The following image shows that two dogs and a cat, with their locations, are detected in an image.
 
 ![](P06-C03-object-detection_files/dogdogcat.png)
 
 所以和图像分类不同的地方在于，目标检测需要找到尽量多的目标物体，而且要准确的定位物体的位置，一般用矩形框来表示。
+
 It differs to image classification, or object recognition, we demonstrated before, object detection may recognize multiple objects in a single image, and also need to learn additional locations.
 
 在接下来的章节里，我们先介绍一个流行的目标检测算法，SSD (Single-Shot MultiBox Object Detection).
+
 On this chapter we will show SSD.
 
 
@@ -20,16 +23,28 @@ The ssd model predicts anchor boxes at multiple scales. The model architecture i
 
 ![](P06-C03-object-detection_files/ssd.svg)
 
+跟所有的图像相关的网络一样，我们需要一个`主干网络`来提取特征，同时也是作为第一个预测特征层。网络在当前层产生大量的`预设框`，和与之对应的每个方框的`分类概率`（背景，猫，狗。。。）以及真正的物体和预设框的`偏移量`。在完成当前层的预测后，我们会下采样当前特征层，作为新的预测层，重新产生新的`预设框`，`分类概率`，`偏移量`。这个过程往往会重复好几次，直到预测特征层到达全局尺度（$1 \times 1$)。
 
-We first use a `body` network to extract the image features, which are used as the input to the first scale (scale 0). The class labels and the according anchor boxes are predicted by `class_predictor` and `box_predictor`, separetively. The features are then down sampled to the next scale (scale 1). Both classes and anchor boxed are predicted again at this scale. This downsampling and predicting routine can be repeated in multiple times to obtain results on multiple resolution scales.
+We first use a `body` network to extract the image features, which are used as the input to the first scale (scale 0). The class labels and the according anchor boxes are predicted by `class_predictor` and `box_predictor`, separatively. The features are then down sampled to the next scale (scale 1). Both classes and anchor boxed are predicted again at this scale. This downsampling and predicting routine can be repeated in multiple times to obtain results on multiple resolution scales.
+
+接下来我们用例子解释每个细节实现。
 
 Next we will explain each component one by one.
 
-### Default anchor boxes
+### 预设框 Default anchor boxes
+
+预设框的形状和大小可以由参数控制，我们往往设置一堆预设框，以期望任意图像上的物体都能有一个预设框能大致重合，由于每个预设框需要对应的预测网络预测值，所以希望对于每个物体都有100%重合的预设框是不现实的，可能会需要几十万甚至几百万的预设框，但是采样的预设框越多，重合概率越好，用几千到上万个预设框基本能实现略大于70%的最好重合率，同时保证了检测的速度。
+
+为了保证重合覆盖率，对于每个特征层上的像素点，我们用不同的大小和长宽比来采样预设框。 假设在某个特定的特征层（$w \times h$），每个预设框的中心点就是特征像素点的中心，然后我们用如下的公式采样预设框的大小：
+- 对于长宽比 $r = 1$, size $s\in (0,1]$, 生成的预设框大小 $ws \times hs$
+- 对于长宽比 $r > 0$ 同时 $r \neq 1$, 生成的预设框大小 $ws\sqrt{r} \times \frac{hs}{\sqrt{r}}$
+
 
 Since an anchor box can have arbituary shape, we sample a set of anchor boxes as the candidate. In particular, for each pixel, we sample multiple boxes centered by this pixel but have various sizes and ratios. Assume the input size is $w \times h$,
 - for size $s\in (0,1]$, the generated box shape will be $ws \times hs$
 - for ratio $r > 0$, the generated box shape will be $w\sqrt{r} \times \frac{h}{\sqrt{r}}$
+
+这里例子里，我们用事先实现的层`MultiBoxPrior`产生预设框，输入*n*个预设尺寸，和*m*个预设的长宽比，输出为*n+m-1*个方框（`sizes[i], ratios[0]` if $i \le n$ otherwise `sizes[0], ratios[i-n]`)而不是n*m个。 当然我们完全可以使用其他的算法产生不同的预设框，但是实践中我们发现上述的方法覆盖率和相应需要的预设框数量比较合适。
 
 We can sample the boxes by the operator `MultiBoxPrior`. It accepts *n* sizes and *m* ratios to generate *n+m-1* boxes for each pixel. The first *i* boxes is generated from `sizes[i], ratios[0]` if $i \le n$ otherwise `sizes[0], ratios[i-n]`.
 
@@ -55,6 +70,7 @@ print('The first anchor box at row 21, column 21:', boxes[20, 20, 0, :])
     [ 0.26249999  0.26249999  0.76249999  0.76249999]
     <NDArray 4 @cpu(0)>
 
+看着数字不够直观的话，我们把框框画出来。取最中心像素的所有预设框，画在图上的话，我们看到已经可以覆盖几种尺寸和位置的物体了。把所有位置的组合起来，就是相当可观的预设框集合了。
 
 We can visualize all anchor boxes generated for one pixel on a certain size feature map.
 
@@ -79,7 +95,11 @@ plt.show()
 ![png](P06-C03-object-detection_files/P06-C03-object-detection_4_0.png)
 
 
-### Predict classes
+### 分类预测 Predict classes
+
+这个部分的目标很简单，就是预测每个预设框对应的分类。我们用$3 \times 3$， Padding (填充) $1 \times 1$的卷积来预测分类概率，这样可以做到卷积后空间上的形状不会变化，而且由于卷积的特点，每个卷积核会扫过每个预测特征层的所有像素点，得到$C \times H \times W$个预测值，$H \times W$对应了空间上所有的像素点，每个通道对应特定的预设框。$C = (类别 + 1) \times 预设框数量$。假设有10个正类，每个像素5个预设框，那么我们就需要$11 \times 5 = 55$个通道。 具体的来说，对于每个像素第*i*个预设框：
+- 通道 `i * (类别 + 1)` 的值对应背景（非物体）的得分
+- 通道 `i * (类别 + 1) + 1 + j` 对应了第j类的得分
 
 The goal is to predict the class label for each anchor box. It is achieved by using a convolution layer. We pick the kernel size to be $3\times 3$ with padding size $(1, 1)$ so that the output will have the same width and height as the input. The confidence scores for the anchor box class labels are stored in channels. In particular, for the *i*-th anchor box
 
@@ -102,7 +122,16 @@ print('Class prediction', cls_pred(x).shape)
     Class prediction (2, 55, 20, 20)
 
 
-### Predict anchor boxes
+### 预测预设框偏移 Predict anchor boxes
+
+为了找到物体准确的位置，光靠预设框本身是不行的，我们还需要预测偏移量以便把真正的物体框出来。
+假设 $b$ 是某个预设框， $Y$ 是目标物体的真实矩形框，我们需要预测的偏移为 $\Delta(Y, b) = (t_x, t_y, t_{width}, t_{height})$，全都是长度为4的向量， 我们求得偏移
+- $t_x = (Y_x - b_x) / b_{width}$
+- $t_y = (Y_y - b_y) / b_{height}$
+- $t_{width} = (Y_{width} - b_{width}) / b_{width}$
+- $t_{height} = (Y_{height} - b_{height}) / b_{height}$
+
+所有的偏移量都除以预设框的长或宽是为了更好的收敛。
 
 The goal is predict how to transfer the current anchor box to the correct box. That is, assume $b$ is one of the sampled default box, while $Y$ is the ground truth, then we want to predict the delta positions $\Delta(Y, b)$, which is a 4-length vector.
 
@@ -115,6 +144,8 @@ More specifically, the delta vector is define as:
 - $t_{height} = (Y_{height} - b_{height}) / b_{height}$
 
 Normalize deltas with box width/height ensures a better convergence behavior.
+
+类似分类概率，我们同样用$3 \times 3$填充$1 \times 1$的卷积来预测偏移。这次不同的是，对于每个预设框，我们只需要4个通道来预测偏移量， 一共需要`预设框数量 * 4`个通道，第 *i* 个预设框对应的偏移量存在通道 `i*4` 到通道 `i*4+3` 之间。
 
 Similar to classes, we use a convolution layer here. The only difference is that the output channel size is now `num_anchors * 4`, with the predicted delta positions for the *i*-th box are stored from channel `i*4` to `i*4+3`.
 
@@ -133,9 +164,11 @@ print('Box prediction', box_pred(x).shape)
     Box prediction (2, 40, 20, 20)
 
 
-### Down-sample features
+### 下采样特征层 Down-sample features
 
-Each time we down sample the features by half. It can be achieved by a simple pooling layer with pooling size 2. We may also stack two convolution, batch norm and relu blocks before the pooling layer to make the network deeper.
+每次我们下采样特征层到一半的长宽，用Pooling(池化)操作就可以轻松的做到，当然也可以用stride(步长)为2的卷积直接得到。在下采样之前，我们会希望增加几层卷积层作为缓冲，防止特征值对应多尺度带来的混乱，同时又能增加网络的深度，得到更好的抽象。
+
+Each time we down sample the features by half. It can be achieved by a simple pooling layer with pooling size 2 (or stride 2 convolution directly). We may also stack two convolution, batch norm and relu blocks before the pooling layer to make the network deeper.
 
 
 ```python
@@ -159,7 +192,9 @@ print('Before', x.shape, 'after', blk(x).shape)
     Before (2, 3, 20, 20) after (2, 10, 10, 10)
 
 
-### Manage preditions from multiple layers
+### 整合多个特征层预测值 Manage predictions from multiple layers
+
+SSD算法的一个关键点在于它用到了多尺度的特征层来预测不同大小的物体。相对来说，浅层的特征层的空间尺度更大，越到网络的深层，空间尺度越小，最后我们往往下采样直到$1 \times 1$，用来预测全图大小的物体。所以每个特征层产生的`预设框`， `分类概率`, `框偏移量` 需要被整合起来统一在全图与真实的物体比较。 为了做到一一对应，我们统一把所有的`预设框`， `分类概率`, `框偏移量` 平铺再连接。得到的是按顺序排列但是摊平的所有预测值和预设框。
 
 A key property of SSD is that predictions are conducted on multiple layers with shrinking spatial size. Thus we have to manage predictions from multiple feature layers. The idea is to concatenate them along convolutional channels, with each one predicting a correspoding value(class or box) for each default anchor. We take class predictor as example, and box predictor follows the same rule.
 
@@ -209,7 +244,9 @@ print('Concat class predictions', concat_predictions([flat_y1, flat_y2]).shape)
     Concat class predictions (2, 25300)
 
 
-### Body network
+### 主干网络 Body network
+
+主干网络用来从图像输入提取特征
 
 The body network is used to extract features from the raw pixel inputs. Common choices are state-of-the-art convolution neural networks. For demonstration purpose, we just stack several down sampling blocks to form the body network.
 

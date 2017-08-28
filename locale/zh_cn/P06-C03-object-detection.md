@@ -3,33 +3,25 @@
 
 目标检测通俗的来说是为了找到图像或者视频里的所有目标物体。在下面这张图中，两狗一猫的位置，包括它们所属的类（狗／猫），需要被正确的检测到。
 
-Object detection aims to detect semantic objects in images or videos. The following image shows that two dogs and a cat, with their locations, are detected in an image.
 
 ![](P06-C03-object-detection_files/dogdogcat.png)
 
 所以和图像分类不同的地方在于，目标检测需要找到尽量多的目标物体，而且要准确的定位物体的位置，一般用矩形框来表示。
 
-It differs to image classification, or object recognition, we demonstrated before, object detection may recognize multiple objects in a single image, and also need to learn additional locations.
 
 在接下来的章节里，我们先介绍一个流行的目标检测算法，SSD (Single-Shot MultiBox Object Detection).
-
-On this chapter we will show SSD.
 
 
 ## SSD:  Single Shot MultiBox Detector
 
 顾名思义，算法的核心是用卷积神经网络一次前向推导求出大量多尺度（几百到几千）的方框来表示目标检测的结果。网络的结构用下图表示。
-The ssd model predicts anchor boxes at multiple scales. The model architecture is illustrated in the following figure.
+
 
 ![](P06-C03-object-detection_files/ssd.svg)
 
 跟所有的图像相关的网络一样，我们需要一个`主干网络`来提取特征，同时也是作为第一个预测特征层。网络在当前层产生大量的`预设框`，和与之对应的每个方框的`分类概率`（背景，猫，狗。。。）以及真正的物体和预设框的`偏移量`。在完成当前层的预测后，我们会下采样当前特征层，作为新的预测层，重新产生新的`预设框`，`分类概率`，`偏移量`。这个过程往往会重复好几次，直到预测特征层到达全局尺度（$1 \times 1$)。
 
-We first use a `body` network to extract the image features, which are used as the input to the first scale (scale 0). The class labels and the according anchor boxes are predicted by `class_predictor` and `box_predictor`, separatively. The features are then down sampled to the next scale (scale 1). Both classes and anchor boxed are predicted again at this scale. This downsampling and predicting routine can be repeated in multiple times to obtain results on multiple resolution scales.
-
 接下来我们用例子解释每个细节实现。
-
-Next we will explain each component one by one.
 
 ### 预设框 Default anchor boxes
 
@@ -40,13 +32,7 @@ Next we will explain each component one by one.
 - 对于长宽比 $r > 0$ 同时 $r \neq 1$, 生成的预设框大小 $ws\sqrt{r} \times \frac{hs}{\sqrt{r}}$
 
 
-Since an anchor box can have arbituary shape, we sample a set of anchor boxes as the candidate. In particular, for each pixel, we sample multiple boxes centered by this pixel but have various sizes and ratios. Assume the input size is $w \times h$,
-- for size $s\in (0,1]$, the generated box shape will be $ws \times hs$
-- for ratio $r > 0$, the generated box shape will be $w\sqrt{r} \times \frac{h}{\sqrt{r}}$
-
 这里例子里，我们用事先实现的层`MultiBoxPrior`产生预设框，输入*n*个预设尺寸，和*m*个预设的长宽比，输出为*n+m-1*个方框（`sizes[i], ratios[0]` if $i \le n$ otherwise `sizes[0], ratios[i-n]`)而不是n*m个。 当然我们完全可以使用其他的算法产生不同的预设框，但是实践中我们发现上述的方法覆盖率和相应需要的预设框数量比较合适。
-
-We can sample the boxes by the operator `MultiBoxPrior`. It accepts *n* sizes and *m* ratios to generate *n+m-1* boxes for each pixel. The first *i* boxes is generated from `sizes[i], ratios[0]` if $i \le n$ otherwise `sizes[0], ratios[i-n]`.
 
 
 ```python
@@ -55,13 +41,13 @@ from mxnet import nd
 from mxnet.contrib.ndarray import MultiBoxPrior
 
 n = 40
-# shape: batch x channel x height x weight
+# 输入形状: batch x channel x height x weight
 x = nd.random_uniform(shape=(1, 3, n, n))  
 
 y = MultiBoxPrior(x, sizes=[.5, .25, .1], ratios=[1, 2, .5])
 
-# the first anchor box generated for pixel at (20,20)
-# its format is (x_min, y_min, x_max, y_max)
+# 取位于 (20,20) 像素点的第一个预设框
+# 格式为 (x_min, y_min, x_max, y_max)
 boxes = y.reshape((n, n, -1, 4))
 print('The first anchor box at row 21, column 21:', boxes[20, 20, 0, :])
 ```
@@ -71,8 +57,6 @@ print('The first anchor box at row 21, column 21:', boxes[20, 20, 0, :])
     <NDArray 4 @cpu(0)>
 
 看着数字不够直观的话，我们把框框画出来。取最中心像素的所有预设框，画在图上的话，我们看到已经可以覆盖几种尺寸和位置的物体了。把所有位置的组合起来，就是相当可观的预设框集合了。
-
-We can visualize all anchor boxes generated for one pixel on a certain size feature map.
 
 
 ```python
@@ -101,11 +85,6 @@ plt.show()
 - 通道 `i * (类别 + 1)` 的值对应背景（非物体）的得分
 - 通道 `i * (类别 + 1) + 1 + j` 对应了第j类的得分
 
-The goal is to predict the class label for each anchor box. It is achieved by using a convolution layer. We pick the kernel size to be $3\times 3$ with padding size $(1, 1)$ so that the output will have the same width and height as the input. The confidence scores for the anchor box class labels are stored in channels. In particular, for the *i*-th anchor box
-
-- channel `i*(num_class+1)` store the scores for this box contains only background
-- channel `i*(num_class+1)+1+j` store the scores for this box contains an object from the *j*-th class
-
 
 ```python
 from mxnet.gluon import nn
@@ -133,21 +112,7 @@ print('Class prediction', cls_pred(x).shape)
 
 所有的偏移量都除以预设框的长或宽是为了更好的收敛。
 
-The goal is predict how to transfer the current anchor box to the correct box. That is, assume $b$ is one of the sampled default box, while $Y$ is the ground truth, then we want to predict the delta positions $\Delta(Y, b)$, which is a 4-length vector.
-
-More specifically, the delta vector is define as:
-[$t_x$, $t_y$, $t_{width}$, $t_{height}$], where
-
-- $t_x = (Y_x - b_x) / b_{width}$
-- $t_y = (Y_y - b_y) / b_{height}$
-- $t_{width} = (Y_{width} - b_{width}) / b_{width}$
-- $t_{height} = (Y_{height} - b_{height}) / b_{height}$
-
-Normalize deltas with box width/height ensures a better convergence behavior.
-
 类似分类概率，我们同样用$3 \times 3$填充$1 \times 1$的卷积来预测偏移。这次不同的是，对于每个预设框，我们只需要4个通道来预测偏移量， 一共需要`预设框数量 * 4`个通道，第 *i* 个预设框对应的偏移量存在通道 `i*4` 到通道 `i*4+3` 之间。
-
-Similar to classes, we use a convolution layer here. The only difference is that the output channel size is now `num_anchors * 4`, with the predicted delta positions for the *i*-th box are stored from channel `i*4` to `i*4+3`.
 
 
 ```python
@@ -167,8 +132,6 @@ print('Box prediction', box_pred(x).shape)
 ### 下采样特征层 Down-sample features
 
 每次我们下采样特征层到一半的长宽，用Pooling(池化)操作就可以轻松的做到，当然也可以用stride(步长)为2的卷积直接得到。在下采样之前，我们会希望增加几层卷积层作为缓冲，防止特征值对应多尺度带来的混乱，同时又能增加网络的深度，得到更好的抽象。
-
-Each time we down sample the features by half. It can be achieved by a simple pooling layer with pooling size 2 (or stride 2 convolution directly). We may also stack two convolution, batch norm and relu blocks before the pooling layer to make the network deeper.
 
 
 ```python
@@ -196,18 +159,16 @@ print('Before', x.shape, 'after', blk(x).shape)
 
 SSD算法的一个关键点在于它用到了多尺度的特征层来预测不同大小的物体。相对来说，浅层的特征层的空间尺度更大，越到网络的深层，空间尺度越小，最后我们往往下采样直到$1 \times 1$，用来预测全图大小的物体。所以每个特征层产生的`预设框`， `分类概率`, `框偏移量` 需要被整合起来统一在全图与真实的物体比较。 为了做到一一对应，我们统一把所有的`预设框`， `分类概率`, `框偏移量` 平铺再连接。得到的是按顺序排列但是摊平的所有预测值和预设框。
 
-A key property of SSD is that predictions are conducted on multiple layers with shrinking spatial size. Thus we have to manage predictions from multiple feature layers. The idea is to concatenate them along convolutional channels, with each one predicting a correspoding value(class or box) for each default anchor. We take class predictor as example, and box predictor follows the same rule.
-
 
 ```python
-# a certain feature map with 20x20 spatial shape
+# 随便创建一个大小为 20x20的预测层
 feat1 = nd.zeros((2, 8, 20, 20))
 print('Feature map 1', feat1.shape)
 cls_pred1 = class_predictor(5, 10)
 cls_pred1.initialize()
 y1 = cls_pred1(feat1)
 print('Class prediction for feature map 1', y1.shape)
-# down-sample
+# 下采样
 ds = down_sample(16)
 ds.initialize()
 feat2 = ds(feat1)
@@ -246,9 +207,9 @@ print('Concat class predictions', concat_predictions([flat_y1, flat_y2]).shape)
 
 ### 主干网络 Body network
 
-主干网络用来从图像输入提取特征
-
-The body network is used to extract features from the raw pixel inputs. Common choices are state-of-the-art convolution neural networks. For demonstration purpose, we just stack several down sampling blocks to form the body network.
+主干网络用来从原始图像输入提取特征。 一般来说我们会用预先训练好的用于分类的高性能网络
+（VGG, ResNet等）来提取特征。
+在这里我们就简单地堆叠几层卷积和下采样层作为主干网络来示例。
 
 
 ```python
@@ -269,9 +230,9 @@ print('Body network', [y.shape for y in bnet(x)])
     Body network [(64, 32, 32), (64, 32, 32)]
 
 
-### Create a toy SSD model
+### 设计一个简单的SSD示意网络 Create a toy SSD model
 
-Now we create a toy SSD model that takes $256 \times 256$ size input.
+我们这里介绍一个示意用的简单SSD网络，出于速度的考量，输入图像尺寸定为 $256 \times 256$。
 
 
 ```python
@@ -365,18 +326,20 @@ print(toy_ssd_model(5, 2))
     ))
 
 
-### Forward
+### 网络前向推导 Forward
 
-Given an input and the model, we can run the forward pass.
+既然我们已经设计完网络结构了，接下来可以定义网络前向推导的步骤。
+首先得到主干网络的输出，然后对于每一个特征预测层，推导当前层的预设框，分类概率和偏移量。
+最后我们把这些输入摊平，连接，作为网络的输出。
 
 
 ```python
 def toy_ssd_forward(x, body, downsamples, class_preds, box_preds, sizes, ratios):                
-    # extract feature with the body network        
+    # 计算主干网络的输出        
     x = body(x)
 
-    # for each scale, add anchors, box and class predictions,
-    # then compute the input to next scale
+    # 在每个预测层, 计算预设框，分类概率，偏移量
+    # 然后在下采样到下一层预测层，重复
     default_anchors = []
     predicted_boxes = []  
     predicted_classes = []
@@ -388,23 +351,22 @@ def toy_ssd_forward(x, body, downsamples, class_preds, box_preds, sizes, ratios)
         if i < 3:
             x = downsamples[i](x)
         elif i == 3:
-            # simply use the pooling layer
+            # 最后一层可以简单地用全局Pooling
             x = nd.Pooling(x, global_pool=True, pool_type='max', kernel=(4, 4))
 
     return default_anchors, predicted_classes, predicted_boxes
 ```
 
-### Put all things together
-
+### 成果 Put all things together
 
 ```python
 from mxnet import gluon
 class ToySSD(gluon.Block):
     def __init__(self, num_classes, **kwargs):
         super(ToySSD, self).__init__(**kwargs)
-        # anchor box sizes for 4 feature scales
+        # 5个预测层，每层负责的预设框尺寸不同，由小到大，符合网络的形状
         self.anchor_sizes = [[.2, .272], [.37, .447], [.54, .619], [.71, .79], [.88, .961]]
-        # anchor box ratios for 4 feature scales
+        # 每层的预设框都用 1，2，0.5作为长宽比候选
         self.anchor_ratios = [[1, 2, .5]] * 5
         self.num_classes = num_classes
 
@@ -414,21 +376,21 @@ class ToySSD(gluon.Block):
     def forward(self, x):
         default_anchors, predicted_classes, predicted_boxes = toy_ssd_forward(x, self.body, self.downsamples,
             self.class_preds, self.box_preds, self.anchor_sizes, self.anchor_ratios)
-        # we want to concatenate anchors, class predictions, box predictions from different layers
+        # 把从每个预测层输入的结果摊平并连接，以确保一一对应
         anchors = concat_predictions(default_anchors)
         box_preds = concat_predictions(predicted_boxes)
         class_preds = concat_predictions(predicted_classes)
-        # it is better to have class predictions reshaped for softmax computation
+        # 改变下形状，为了更方便地计算softmax
         class_preds = nd.reshape(class_preds, shape=(0, -1, self.num_classes + 1))
 
         return anchors, class_preds, box_preds
 ```
 
-### Outputs of ToySSD
+### 网络输出示意 Outputs of ToySSD
 
 
 ```python
-# instantiate a ToySSD network with 10 classes
+# 新建一个2个正类的SSD网络
 net = ToySSD(2)
 net.initialize()
 x = nd.zeros((1, 3, 256, 256))
@@ -439,17 +401,19 @@ print('Outputs:', 'anchors', default_anchors.shape, 'class prediction', class_pr
     Outputs: anchors (1, 5444, 4) class prediction (1, 5444, 3) box prediction (1, 21776)
 
 
-## Dataset
+## 数据集 Dataset
 
-Let's find out how we can train a network to detect Pikachu in the wild.
-
-We provide a synthetic toy dataset from open source 3D models for Pikachu. The dataset consists of 1000 pikachus with random pose/scale/position in random background images. The exact locations are recorded as ground-truth for training and validation.
+聊了半天怎么构建一个虚无的网络，接下来看看真正有意思的东西。
+我们用3D建模批量生成了一个皮卡丘的数据集，产生了1000张图片作为这个展示用的训练集。
+这个数据集里面，皮神会以各种角度，各种姿势出现在各种背景图中，就像Pokemon Go里增强现实那样炫酷。
+因为是生成的数据集，我们自然可以得到每只皮神的真实坐标和大小，用来作为训练的真实标记。
 
 ![](https://user-images.githubusercontent.com/3307514/29479494-5dc28a02-8427-11e7-91d0-2849b88c17cd.png)
 
 
-### Download dataset
+### 下载数据集 Download dataset
 
+下载提前准备好的数据集并验证
 
 ```python
 from mxnet.test_utils import download
@@ -481,8 +445,9 @@ for k, v in hashes.items():
         download(url, fname=fname, dirname='data', overwrite=True)
 ```
 
-### Load dataset
+### 加载数据 Load dataset
 
+加载数据可以用`mxnet.image.ImageDetIter`，同时还提供了大量数据增强的选项，比如翻转，随机截取等等。
 
 ```python
 import mxnet.image as image
@@ -517,19 +482,18 @@ print(batch)
     DataBatch: data shapes: [(32, 3, 256, 256)] label shapes: [(32, 1, 5)]
 
 
-### Illustration
+### 示意图 Illustration
 
-Let's display one image loaded by ImageDetIter.
-
+加载的训练数据还可以显示出来看看到底是怎么样的。
 
 ```python
 import numpy as np
 
-img = batch.data[0][0].asnumpy()  # grab the first image, convert to numpy array
-img = img.transpose((1, 2, 0))  # we want channel to be the last dimension
+img = batch.data[0][0].asnumpy()  # 取第一批数据中的第一张，转成numpy
+img = img.transpose((1, 2, 0))  # 交换下通道的顺序
 img += np.array([123, 117, 104])
-img = img.astype(np.uint8)  # use uint8 (0-255)
-# draw bounding boxes on image
+img = img.astype(np.uint8)  # 图片应该用0-255的范围
+# 在图上画出真实标签的方框
 for label in batch.label[0][0].asnumpy():
     if label[0] < 0:
         break
@@ -548,11 +512,14 @@ plt.show()
 ![png](P06-C03-object-detection_files/P06-C03-object-detection_30_1.png)
 
 
-## Train
+## 训练 Train
 
-### Losses
+### 损失函数 Losses
 
-Network predictions will be penalized for incorrect class predictions and wrong box deltas.
+通过定义损失函数，我们可以让网络收敛到我们希望得到的目标检测功能，也就是说，我们希望网络能正确预测物体的类别，
+同时能预测出准确的预设框偏移量，以正确地显示物体的真正大小和位置。
+这个预测的类别和偏移量都是可以通过真实标签和网络的当前预测值得到，在这里我们用`MultiBoxTarget`层来计算，
+其中包含了预测框和真实标签的匹配，正类和负类的选择，就不一一详述了。（详情见论文 SSD: Single Shot MultiBox Detector）。
 
 
 ```python
@@ -560,15 +527,16 @@ from mxnet.contrib.ndarray import MultiBoxTarget
 def training_targets(default_anchors, class_predicts, labels):
     class_predicts = nd.transpose(class_predicts, axes=(0, 2, 1))
     z = MultiBoxTarget(*[default_anchors, labels, class_predicts])
-    box_target = z[0]  # box offset target for (x, y, width, height)
-    box_mask = z[1]  # mask is used to ignore box offsets we don't want to penalize, e.g. negative samples
-    cls_target = z[2]  # cls_target is an array of labels for all anchors boxes
+    box_target = z[0]  # 预设框偏移量 (x, y, width, height)
+    box_mask = z[1]  # box_mask用来把负类的偏移量置零，因为背景不需要位置！
+    cls_target = z[2]  # 每个预设框应该对应的分类
     return box_target, box_mask, cls_target
 ```
 
-Pre-defined losses are provided in `gluon.loss` package, however, we can define losses manually.
+在`gluon.loss`中有很多预设的损失函数可以选择，当然我们也可以快速地手写一些损失函数。
 
-First, we need a Focal Loss for class predictions.
+首先，对于物体分类的概率，平时我们往往用交叉墒，不过在目标检测中，我们有大量非平衡的负类（背景），
+那么 Focal Loss会是一个很好的选择（详情见论文 Focal Loss for Dense Object Detection）。
 
 
 ```python
@@ -592,8 +560,7 @@ print(cls_loss)
 
     FocalLoss(batch_axis=0, w=None)
 
-
-Next, we need a SmoothL1Loss for box predictions.
+接下来是一个流行的 SmoothL1 损失函数，用来惩罚不准确的预设框偏移量。
 
 
 ```python
@@ -612,9 +579,10 @@ print(box_loss)
     SmoothL1Loss(batch_axis=0, w=None)
 
 
-### Evaluate metrics
+### 衡量性能指标 Evaluate metrics
 
-Evalute metrics are used for collectting training status, which has no effect on training itself.
+我们在训练时需要一些指标来衡量训练是否顺利，我们这里用准确率衡量分类的性能，用平均绝对误差衡量偏移量的预测能力。
+这些指标对网络本身没有任何影响，只是用于观测。
 
 
 ```python
@@ -622,21 +590,23 @@ cls_metric = mx.metric.Accuracy()
 box_metric = mx.metric.MAE()  # measure absolute difference between prediction and target
 ```
 
+### 选择训练用的设备 Set context for training
 
 ```python
-### Set context for training
-ctx = mx.gpu()  # it may takes too long to train using CPU
+
+ctx = mx.gpu()  # 用GPU加速训练过程
 try:
     _ = nd.zeros(1, ctx=ctx)
-    # pad label for cuda implementation
+    # 为了更有效率，cuda实现需要少量的填充，不影响结果
     train_data.reshape(label_shape=(3, 5))
     train_data = test_data.sync_label_shape(train_data)
 except mx.base.MXNetError as err:
+    # 没有gpu也没关系，交给cpu了
     print('No GPU enabled, fall back to CPU, sit back and be patient...')
     ctx = mx.cpu()
 ```
 
-### Initialize parameters
+### 初始化网络参数 Initialize parameters
 
 
 ```python
@@ -644,23 +614,26 @@ net = ToySSD(num_class)
 net.initialize(mx.init.Xavier(magnitude=2), ctx=ctx)
 ```
 
-### Set up trainer
+### 用gluon.Trainer简化训练过程 Set up trainer
 
+gluon.Trainer能简化优化网络参数的过程，免去对各个参数单独更新的痛苦。
 
 ```python
 net.collect_params().reset_ctx(ctx)
 trainer = gluon.Trainer(net.collect_params(), 'sgd', {'learning_rate': 0.1, 'wd': 5e-4})
 ```
 
-### Start training
+### 开始训练 Start training
 
-Optionally we load pretrained model for demonstration purpose. One can set `from_scratch = True` to training from scratch, which may take more than 30 mins to finish using a single capable GPU.
+既然是简单的示例，我们不想花费太多的时间来训练网络，所以会预加载训练过一段时间的网络参数继续训练。
+如果你感兴趣的话，可以设置`from_scratch = True`，这样网络就会从初始的随机参数开始训练。
+一般用单个gpu会花费半个多小时的时间来得到满意的结果。
 
 
 ```python
-epochs = 150  # set larger to get better performance
+epochs = 150  # 设大一点的值来得到更好的结果
 log_interval = 20
-from_scratch = False  # set to True to train from scratch
+from_scratch = False  # 设为True就可以从头开始训练
 if from_scratch:
     start_epoch = 0
 else:
@@ -679,30 +652,30 @@ else:
 import time
 from mxnet import autograd as ag
 for epoch in range(start_epoch, epochs):
-    # reset iterator and tick
+    # 重置iterator和时间戳
     train_data.reset()
     cls_metric.reset()
     box_metric.reset()
     tic = time.time()
-    # iterate through all batch
+    # 迭代每一个批次
     for i, batch in enumerate(train_data):
         btic = time.time()
-        # record gradients
+        # 用autograd.record记录需要计算的梯度
         with ag.record():
             x = batch.data[0].as_in_context(ctx)
             y = batch.label[0].as_in_context(ctx)
             default_anchors, class_predictions, box_predictions = net(x)
             box_target, box_mask, cls_target = training_targets(default_anchors, class_predictions, y)
-            # losses
+            # 损失函数计算
             loss1 = cls_loss(class_predictions, cls_target)
             loss2 = box_loss(box_predictions, box_target, box_mask)
-            # sum all losses
+            # 1比1叠加两个损失函数，也可以加权重
             loss = loss1 + loss2
-            # backpropagate
+            # 反向推导
             loss.backward()
-        # apply
+        # 用trainer更新网络参数
         trainer.step(batch_size)
-        # update metrics
+        # 更新下衡量的指标
         cls_metric.update([cls_target], [nd.transpose(class_predictions, (0, 2, 1))])
         box_metric.update([box_target], [box_predictions * box_mask])
         if (i + 1) % log_interval == 0:
@@ -711,13 +684,13 @@ for epoch in range(start_epoch, epochs):
             print('[Epoch %d Batch %d] speed: %f samples/s, training: %s=%f, %s=%f'
                   %(epoch ,i, batch_size/(time.time()-btic), name1, val1, name2, val2))
 
-    # end of epoch logging
+    # 打印整个epoch的的指标
     name1, val1 = cls_metric.get()
     name2, val2 = box_metric.get()
     print('[Epoch %d] training: %s=%f, %s=%f'%(epoch, name1, val1, name2, val2))
     print('[Epoch %d] time cost: %f'%(epoch, time.time()-tic))
 
-# we can save the trained parameters to disk
+# 还可以把网络的参数存下来以便下次再用
 net.save_params('ssd_%d.params' % epochs)
 ```
 
@@ -729,30 +702,32 @@ net.save_params('ssd_%d.params' % epochs)
     [Epoch 149] time cost: 15.353258
 
 
-## Test
+## 测试 Test
 
-Testing is similar to training, except that we don't need to compute gradients and training targets. Instead, we take the predictions from network output, and combine them to get the real detection output.
+接下来就是 `exciting`的时刻，我们用训练好的网络来测试一张图片。
+网络推导的过程和训练很相似，只不过我们不再需要计算真值和损失函数，也不再需要更新网络的参数，一次推导就可以得到结果。
 
-### Prepare the test data
+### 准备测试数据 Prepare the test data
 
+我们需要读取一张图片，稍微调整到网络需要的结构，比如说我们需要调整图片通道的顺序，减去平均值等等惯用的方法。
 
 ```python
 import numpy as np
 import cv2
 def preprocess(image):
     """Takes an image and apply preprocess"""
-    # resize to data_shape
+    # 调整图片大小成网络的输入
     image = cv2.resize(image, (data_shape, data_shape))
-    # swap BGR to RGB
+    # 转换 BGR 到 RGB
     image = image[:, :, (2, 1, 0)]
-    # convert to float before subtracting mean
+    # 减mean之前先转成float
     image = image.astype(np.float32)
-    # subtract mean
+    # 减 mean
     image -= np.array([123, 117, 104])
-    # organize as [batch-channel-height-width]
+    # 调成为 [batch-channel-height-width]
     image = np.transpose(image, (2, 0, 1))
     image = image[np.newaxis, :]
-    # convert to ndarray
+    # 转成 ndarray
     image = nd.array(image)
     return image
 
@@ -764,13 +739,13 @@ print('x', x.shape)
     x (1, 3, 256, 256)
 
 
-### Network inference
+### 网络推导 Network inference
 
-In a single line of code!
+只要一行代码，输入处理完的图片，输出我们要的所有预测值和预设框。
 
 
 ```python
-# if pre-trained model is provided, we can load it
+# 如果有预先训练好的网络参数，可以直接加载
 # net.load_params('ssd_%d.params' % epochs, ctx)
 anchors, cls_preds, box_preds = net(x.as_in_context(ctx))
 print('anchors', anchors)
@@ -802,14 +777,17 @@ print('box delta predictions', box_preds)
     <NDArray 1x21776 @gpu(0)>
 
 
-### Convert predictions to real object detection results
+### 转换为可读的输出 Convert predictions to real object detection results
 
+要把网络输出转换成我们需要的坐标，还要最后一步，比如我们需要softmax把分类预测转换成概率，
+还需要把偏移量和预设框结合来得到物体的大小和位置。
+非极大抑制（Non-Maximum Suppression）也是必要的一步，因为一个物体往往有不只一个检测框。
 
 ```python
 from mxnet.contrib.ndarray import MultiBoxDetection
-# convert predictions to probabilities using softmax
+# 跑一下softmax， 转成0-1的概率
 cls_probs = nd.SoftmaxActivation(nd.transpose(cls_preds, (0, 2, 1)), mode='channel')
-# apply shifts to anchors boxes, non-maximum-suppression, etc...
+# 把偏移量加到预设框上，去掉得分很低的，跑一便nms，得到最终的结果
 output = MultiBoxDetection(*[cls_probs, box_preds, anchors], force_suppress=True, clip=False)
 print(output)
 ```
@@ -825,12 +803,12 @@ print(output)
     <NDArray 1x5444x6 @gpu(0)>
 
 
-Each row in the output corresponds to a detection box, as in format [class_id, confidence, xmin, ymin, xmax, ymax].
+结果中，每一行都是一个可能的结果框，表示为[类别id， 得分， 左边界，上边界，右边界，下边界]，
+有很多-1的原因是网络预测到这些都是背景，或者作为被抑制的结果。
 
-Most of the detection results are -1, indicating that they either have very small confidence scores, or been suppressed through non-maximum-suppression.
+### 显示结果 Display results
 
-### Display results
-
+把得到的转换结果画在图上，就得到我们期待已久的几十万伏特图了！
 
 ```python
 def display(img, out, thresh=0.5):
@@ -867,11 +845,14 @@ display(image[:, :, (2, 1, 0)], output[0].asnumpy(), thresh=0.45)
 ![png](P06-C03-object-detection_files/P06-C03-object-detection_58_0.png)
 
 
-## Conclusion
+## 小结 Conclusion
 
-Detection is harder than classification, since we want not only class probabilities, but also localizations of different objects including potential small objects. Using sliding window together with a good classifier might be an option, however, we have shown that with a properly designed convolutional neural network, we can do single shot detection which is blazing fast and accurate!
+目标检测不同于分类任务，需要考虑的不只是全图尺度的单一分类，而是需要检测到不同大小，不同位置的物体，
+难度自然提升了许多，用扫窗之类的传统方法早已不适合神经网络这种需要大量计算需求的新结构。
+幸好我们可以用本章节介绍的方法，利用卷积网络的特性，一次推导得到全部的预测结果，相对来说快速且准确。
 
-For whinges or inquiries, [open an issue on  GitHub.](https://github.com/zackchase/mxnet-the-straight-dope)
+我们希望能用较短的篇幅来描述一个足够简单的过程，但是难免会有疏漏，欢迎各种问题和建议，与此同时，
+我们会不断更新教程，并且会带来更多不同的算法，敬请期待。
 
 
 ```python

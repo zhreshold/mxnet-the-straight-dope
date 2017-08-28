@@ -787,7 +787,7 @@ print('box delta predictions', box_preds)
 from mxnet.contrib.ndarray import MultiBoxDetection
 # 跑一下softmax， 转成0-1的概率
 cls_probs = nd.SoftmaxActivation(nd.transpose(cls_preds, (0, 2, 1)), mode='channel')
-# 把偏移量加到预设框上，去掉得分很低的，跑一便nms，得到最终的结果
+# 把偏移量加到预设框上，去掉得分很低的，跑一遍nms，得到最终的结果
 output = MultiBoxDetection(*[cls_probs, box_preds, anchors], force_suppress=True, clip=False)
 print(output)
 ```
